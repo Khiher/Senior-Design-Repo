@@ -140,9 +140,26 @@ P.ctrl.V_write_max = dev.V_reset; % never write harder than the reset can erase 
 P.ctrl.V_idle    = 0;     % cap voltage while holding (0 = fully discharged, lowest energy) [V]
 P.ctrl.spec_tol  = 10e6;  % accuracy spec [Hz]
 P.ctrl.write_tol = 40e6;  % accept a write when |f_magnet - f_target| < this; the trim coil does the rest [Hz]
-P.ctrl.write_bias = 20e6; % aim writes this far LOW: the magnet can only be raised without a reset,
-                          %  so a write is accepted only if it lands between -write_tol and
-                          %  +standby_enter_tol of the target; the trim covers the rest [Hz]
+P.ctrl.strategy  = 2;     % fine-tuning method:
+                          %  1 = approach from below: aim low, refine with small + pulses;
+                          %      too high afterwards -> reset + rewrite
+                          %  2 = overshoot, correct down: aim high, refine with small REVERSE
+                          %      pulses (gentler: ~100 MHz/V vs ~600 MHz/V for + writes)
+P.ctrl.write_bias = 20e6; % how far past the target writes aim (low for 1, high for 2). A write is
+                          %  accepted if it lands within write_tol on the aimed side, or within
+                          %  standby_enter_tol on the other side; the trim covers the rest [Hz]
+% Reverse-pulse calibration: rev_V(i,j) = reverse voltage that lowers f by
+% rev_D(j) after a write at rev_Vw(i). Filled in by yig_fit_device from the
+% fitted magnet (bench equivalent: after each LUT write, step the reverse
+% voltage up and record the drop). The dead zone differs a lot per board:
+% corrections start at ~0.5x the write voltage on PCB1, ~0.83x on PCB2-YIG6.
+P.ctrl.rev_Vw = (floor(min(P.lut.V)) - 1):1:min(ceil(max(P.lut.V)) + 3, dev.V_reset);  % [V], 1 V grid
+P.ctrl.rev_D  = [5 10 20 40 80]*1e6;              % [Hz]
+P.ctrl.rev_V  = 0.5*P.ctrl.rev_Vw(:)*ones(1, 5);  % [V] placeholder until fitted
+P.ctrl.rev_step0 = 1.0;   % if a correction misses: first step in the dead zone, doubles each time [V]
+P.ctrl.rev_dV_max = 4.0;  % largest single increase of the reverse voltage [V]
+P.ctrl.max_rev   = 12;    % extra refine pulses allowed for the reverse search
+P.ctrl.t_refine  = 0.2e-3;% hold between refine pulses [s]
 P.ctrl.max_iter  = 10;    % max write pulses per target
 P.ctrl.t_settle  = 7.5*P.gap.tau_eddy; % wait after a pulse before measuring [s] (eddy decays to 0.05%)
 P.ctrl.n_avg     = 5;     % Hall samples averaged per measurement

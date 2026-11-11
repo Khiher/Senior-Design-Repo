@@ -52,6 +52,28 @@ rep.f_wmax  = freq_after(P, Ir, Imax_w);     % strongest allowed write
 rep.I_reset = Ir;
 rep.I_write = Iw;
 
+% ---- reverse-pulse calibration (for strategy 2) -------------------------
+% Bench equivalent: write at each voltage on a 1 V grid, then fire
+% increasing reverse pulses and record the voltage that lowers the
+% frequency by each amount in rev_D.
+D_grid = [5 10 20 40 80]*1e6;
+Vg = (floor(min(Vw)) - 1):1:min(ceil(max(Vw)) + 3, P.ctrl.V_write_max);
+ipv = Iw(end)/Vw(end);                       % peak amps per volt (natural pulse, linear)
+rev_V = zeros(numel(Vg), numel(D_grid));
+for k = 1:numel(Vg)
+    fw = freq_after(P, Ir, ipv*Vg(k));
+    for j = 1:numel(D_grid)
+        lo = 0;  hi = P.ctrl.V_reset;            % drop(lo) = 0, drop(V_reset) = everything
+        for it = 1:30                            % bisection (drop is monotone in the reverse V)
+            mid = 0.5*(lo + hi);
+            if fw - freq_after(P, Ir, ipv*Vg(k), ipv*mid) < D_grid(j), lo = mid; else, hi = mid; end
+        end
+        rev_V(k, j) = 0.5*(lo + hi);
+    end
+end
+P.ctrl.rev_Vw = Vg;   P.ctrl.rev_D = D_grid;   P.ctrl.rev_V = rev_V;
+rep.rev_V = rev_V;
+
 if verbose
     fprintf(['Fitted magnet to LUT:  B_pass = %.4f T, Bmax = %.4f T, hc_mean = %.1f kA/m, ' ...
              'hc_sd = %.1f kA/m, hu_sd = %.1f kA/m, D = %.1f kA/m\n'], ...
@@ -63,6 +85,12 @@ if verbose
     end
     fprintf('   RMS error %.1f MHz.  After reset only: %.2f GHz.  Write at %g V: %.2f GHz.\n', ...
         rep.rms_MHz, rep.f_reset/1e9, P.ctrl.V_write_max, rep.f_wmax/1e9);
+    fprintf('   Reverse pulse [V] that lowers f by %s MHz, after a write at:\n', mat2str(D_grid/1e6));
+    for k = 1:numel(Vg)
+        if any(abs(Vg(k) - Vw) < 0.5)
+            fprintf('     +%4.1f V: %s\n', Vg(k), mat2str(round(rev_V(k,:), 2)));
+        end
+    end
 end
 end
 
@@ -95,13 +123,18 @@ c = c + 1e4*max(0, (P.gap.Bmax - P.gap.B_pass + 0.005)/0.001)^2;
 c = c + 2*sum(log(exp(x(5:6))./x0s(5:6)).^2);
 end
 
-function f = freq_after(P, Ir, Iw)
-% replay: reset pulse (-Ir) -> 0 -> write pulse (+Iw) -> 0, read the field
+function f = freq_after(P, Ir, Iw, Irev)
+% replay: reset pulse (-Ir) -> 0 -> write pulse (+Iw) -> 0
+%         [-> reverse pulse (-Irev) -> 0], read the field
 yig_magnet_step(0, P, true);           % fresh magnet (P.mag.init state)
 yig_magnet_step(-Ir, P);
 mag = yig_magnet_step(0, P);
 if Iw > 0
     yig_magnet_step(Iw, P);
+    mag = yig_magnet_step(0, P);
+end
+if nargin > 3 && Irev > 0
+    yig_magnet_step(-Irev, P);
     mag = yig_magnet_step(0, P);
 end
 B = P.gap.B_pass + P.gap.Bmax*mag(1);

@@ -53,7 +53,7 @@ for k = 1:nseg
         R.max_err(k) = max(abs(err(idx(i_resp):idx(end))));
         R.t_out(k)   = sum(~ok(i_resp:end))*dt;
     end
-    sb = mode(idx) >= 6;            % STANDBY or WAKE
+    sb = mode(idx) == 6 | mode(idx) == 7;   % STANDBY or WAKE
     sb_all(idx) = sb;
     R.standby_frac(k) = mean(sb);
     if any(sb), R.P_standby(k) = mean(p_inst(idx(sb))); end

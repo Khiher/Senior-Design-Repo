@@ -140,17 +140,61 @@ The **YIG Plant** subsystem runs every `Ts` (1 µs):
 ## Baseline controller (what ships in `yig_controller.m`)
 
 This is the vendor procedure, closed around a **Hall sensor** that measures
-the field near the YIG sphere:
+the field near the YIG sphere. `P.ctrl.strategy` picks how the magnet is
+fine-tuned after the first write:
+
+| | Strategy 1: approach from below | Strategy 2: overshoot, correct down (default) |
+|---|---|---|
+| First write aims | `write_bias` (20 MHz) **low** | `write_bias` **high** |
+| Fine correction | small **+** pulses (~600 MHz/V) | small **reverse** pulses (~100–170 MHz/V, gentler) |
+| Magnet ended up on the wrong side | reset + rewrite (a GHz-sized outage) | re-fire the same write (restores the overshoot), correct down again |
+| Needs | the vendor LUT | the vendor LUT **plus** a reverse-pulse calibration |
+
+Steps:
 
 1. **Reset.** A natural −pulse at `V_reset` puts the magnet at its lowest field (about 2.4–3.3 GHz depending on the board).
-2. **Write.** A natural +pulse at `V_k`, from the device LUT, aimed `write_bias` (20 MHz) **low**. The magnet can only be raised without a reset, so writes approach from below.
-3. **Measure.** After the eddy currents settle (`t_settle` = 7.5·`tau_eddy`), estimate the magnet-only frequency. If it is between −`write_tol` and +`standby_enter_tol` of the target, feed the remaining error straight into the trim coil and go to TRACK. Otherwise: too low → bigger write (no reset; Preisach wipe-out); too high → reset and write smaller.
+2. **Write.** A natural +pulse at `V_k` from the device LUT, aimed low or high (above).
+3. **Measure.** After the eddy currents settle (`t_settle` = 7.5·`tau_eddy`), estimate the magnet-only frequency. Inside the accept window → feed the remaining error straight into the trim coil and go to TRACK. Otherwise: too low → bigger write (no reset; Preisach wipe-out); too high → reset and write smaller.
 4. **Track.** A PI loop on the trim coil (about ±56 MHz) holds the target.
-5. **Standby.** After `t_standby` (5 ms), small +"nudge" pulses raise the magnet until the trim supplies less than `standby_enter_tol` (6 MHz). Then the trim and Hall sensor switch off: the magnet holds with zero power. Every `t_wake` (20 ms) the Hall is powered briefly; if the error exceeds `standby_wake_tol` (8 MHz) the controller goes back to TRACK.
+5. **Standby.** After `t_standby` (5 ms), refine pulses (per strategy) move the magnet until the trim supplies less than `standby_enter_tol` (6 MHz). Then the trim and Hall sensor switch off and the magnet holds with zero power. Every `t_wake` (20 ms) the Hall is powered briefly; if the error exceeds `standby_wake_tol` (8 MHz) the controller goes back to TRACK.
 
 The voltage table (`P.ctrl.cal_f`, `P.ctrl.cal_V`) starts as the device LUT
 and is refined after every write. Writes never exceed `V_reset`, so a reset
 can always erase them.
+
+### Reverse pulses
+
+In the hysteresis model a **smaller** pulse in the same direction as the last
+one does nothing, but a **reverse** pulse lowers the field once it is past a
+"dead zone". Example, PCB1 after a +30 V write (about 10.00 GHz): −15 V
+lowers it 2 MHz, −18 V 37 MHz, −20 V 160 MHz, −24 V 1.1 GHz, −40 V back to
+the reset level. The dead zone differs a lot per board (corrections start at
+about 0.5× the write voltage on PCB1, 0.83× on PCB2-YIG6), so strategy 2
+uses a **reverse calibration table** (`P.ctrl.rev_V`): for every 1 V of write
+voltage, the reverse voltage that lowers the frequency by 5/10/20/40/80 MHz.
+`yig_fit_device` builds it from the fitted magnet; on the bench it would be
+measured the same way as the vendor LUT. If a correction misses, the
+controller brackets the right voltage between "too little" and "too much",
+re-firing the write to undo an overshoot.
+
+### Strategy comparison
+
+3 boards × 3 noise seeds, default test profile (script sim):
+
+| Board | Strategy | Pulses per run (reset / + / reverse) | Runs with a > 0.5 GHz excursion | Worst error otherwise | Worst response |
+|---|---|---|---|---|---|
+| PCB1 | 1 | 5.7 / 18.7 / 0 = 24.3 | 1 of 3 | 87 MHz | 2.32 ms |
+| PCB1 | 2 | 5.7 / 8.3 / 7.3 = 21.3 | 1 of 3 | 57 MHz | 2.35 ms |
+| PCB2-YIG6 | 1 | 5.0 / 20.0 / 0 = 25.0 | 3 of 3 | – | 2.21 ms |
+| PCB2-YIG6 | 2 | 4.0 / 7.0 / 9.7 = 20.7 | 0 of 3 | 99 MHz | 2.18 ms |
+| Old passive | 1 | 7.3 / 22.7 / 0 = 30.0 | 3 of 3 | – | 4.71 ms |
+| Old passive | 2 | 7.3 / 11.0 / 8.7 = 27.0 | 1 of 3 | 122 MHz | 4.75 ms |
+
+- **Response time is the same.** Both strategies share the reset + first write + trim feedforward, which is what reaches 10 MHz. Overshooting is not faster to the first in-spec moment.
+- **Strategy 2 settles the magnet with fewer pulses** (10–17 % fewer) and **avoids most reset outages** (2 of 9 runs vs 7 of 9), because a magnet that drifts or lands high is corrected down instead of reset.
+- With the calibration table, strategy 2 usually needs **one** reverse pulse when the target is near a LUT voltage. Without it (dead zone found by search), it needed up to 20.
+- The remaining outages are fallbacks: a disturbance that saturates the trim, or a correction that does not converge (the guard then re-writes from a reset).
+- **Known weakness of strategy 2:** "restoring" the overshoot by re-firing the same write voltage does not land exactly back on it. The magnet's self-demagnetising field is weaker after a reverse correction, so the same pulse pushes it higher (about +20 MHz further in one trace). The search can then fail to converge and fall back to a reset. Results also vary with the noise sequence: one Simulink run on PCB1 had three such outages. A smarter correction for "corrected too far" (a small calibrated + pulse instead of re-firing the write) is the next improvement.
 
 ### Hall sensor and calibration
 
@@ -178,13 +222,14 @@ Results with the current placeholders (script sim, default profile):
 |---|---|---|
 | Standby < 1 mW | **Pass**, about 0.3 mW on every board | `P_sleep`, Hall power × wake duty, trim off |
 | < 1 ms response | **Fail**, about 1.2 ms when the LUT's first guess is good, 2–5 ms when it isn't | the settle time after a write (7.5·`tau_eddy`), and the 4-point LUT: straight-line interpolation can be ~250 MHz off at 5 GHz, which costs a second write the first time a target is visited |
-| 10 MHz accuracy | **Fail** in short bursts: about 50–90 MHz for about 0.5 ms after every write pulse; a full re-tune outage when a disturbance pushes the field **up** | the main coil's own field during a pulse (`k_main`) leaking through the eddy lag; and the magnet can only be lowered by a reset |
+| 10 MHz accuracy | **Fail** in short bursts: about 50–120 MHz for about 0.5 ms after every pulse; occasionally a GHz-sized re-tune outage (more often with strategy 1) | the main coil's own field during a pulse (`k_main`) leaking through the eddy lag; with strategy 1, a magnet that ends up too high needs a reset |
 
 Levers this points to (all placeholders today, so measure them first):
 - **`tau_eddy`.** At 50 µs instead of 100 µs, responses drop to about 0.8 ms, but each pulse's disturbance roughly doubles (less smoothing).
 - **A denser LUT** (more calibration points) removes most second writes.
 - **`k_main`** (how much of the main coil's field reaches the sphere directly) sets the size of the per-pulse disturbance.
-- **Charger accuracy** (`Vset_err_sd`, 5 mV ≈ 3 MHz): much worse and the magnet alone can't land within the standby tolerance.
+- **Charger accuracy** (`Vset_err_sd`, 5 mV ≈ 3 MHz on a + write, ≈ 0.5–0.8 MHz on a reverse correction): much worse and the magnet alone can't land within the standby tolerance with strategy 1.
+- **The reverse-pulse curve** is a model prediction (the fit only saw + writes). Bench test: write +30 V, then reverse pulses of increasing size, measuring the frequency after each.
 
 ## Parameters
 

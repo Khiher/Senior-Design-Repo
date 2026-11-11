@@ -37,33 +37,45 @@ function u = yig_controller(f_target, y, P)
 %        u(8) mode       controller state id (logging only)
 %
 %   ------------------------------------------------------------------
-%   BASELINE STRATEGY (the vendor procedure, closed around the Hall sensor):
+%   BASELINE STRATEGY (the vendor procedure, closed around the Hall sensor).
+%   P.ctrl.strategy picks how the magnet is fine-tuned:
+%     1 = APPROACH FROM BELOW: aim writes low, refine with small + pulses;
+%         a magnet that ends up too high needs a reset + rewrite.
+%     2 = OVERSHOOT, CORRECT DOWN: aim writes high, refine with small
+%         REVERSE (-) pulses, which move the field 4-6x more gently than
+%         + writes; a magnet that ends up too low is re-written at the same
+%         voltage (restoring the overshoot) and corrected down again.
+%
 %     1. RESET  : natural pulse at -V_reset -> magnet at its lowest field.
-%     2. WRITE  : natural pulse at +V_k, V_k = LUT(f_target - write_bias),
-%                 i.e. aimed slightly low.
+%     2. WRITE  : natural pulse at +V_k, V_k = LUT(f_target -/+ write_bias).
 %     3. MEASURE: after the eddy currents settle, estimate the magnet-only
-%                 frequency. Within write_tol -> feed the remaining error
-%                 straight into the trim coil (feedforward) and TRACK.
+%                 frequency. Within the accept window -> feed the remaining
+%                 error straight into the trim coil (feedforward) and TRACK.
 %                 Otherwise: too low -> bigger write (no reset needed,
 %                 Preisach wipe-out); too high -> reset + smaller write.
 %     4. TRACK  : PI on the trim coil holds f_target.
-%     5. STANDBY: after t_standby, small + "nudge" pulses move the magnet
-%                 until the trim supplies < standby_enter_tol, then trim
-%                 and Hall turn off (zero-power hold). Every t_wake the
+%     5. STANDBY: after t_standby, refine pulses (see strategy) move the
+%                 magnet until the trim supplies < standby_enter_tol, then
+%                 trim and Hall turn off (zero-power hold). Every t_wake the
 %                 Hall is powered briefly; if the error exceeds
-%                 standby_wake_tol, go back to TRACK (which re-nudges).
+%                 standby_wake_tol, go back to TRACK (which refines again).
 %   The voltage LUT is refined online after every write.
 %   ------------------------------------------------------------------
 
 % mode ids
 RESET_CHARGE = 1;  PULSE_WAIT = 2;  WRITE_CHARGE = 3;  MEASURE = 4;
-TRACK = 5;  STANDBY = 6;  WAKE = 7;
+TRACK = 5;  STANDBY = 6;  WAKE = 7;  REV_CHARGE = 8;
+% what the last pulse was (decides how MEASURE uses the result)
+K_WRITE = 1;  K_REV = 2;  K_RESTORE = 3;
 
 persistent mode next_mode timer f_act V_k V_lo V_hi has_lo has_hi ...
            V_prev f_prev has_prev iter V_max_since_reset f_acc n_acc ...
            integ sat_timer cal_V dVdf0 dVdf fire_out V0 pol ...
-           trim_on hall_on hall_timer hold_timer wake_timer n_nudge aim_bias
+           trim_on hall_on hall_timer hold_timer wake_timer n_nudge aim_bias ...
+           kind V_w f_w V_rev V_nl f_nl V_a d_a V_a2 d_a2 V_b d_b dz_step
 if isempty(mode)
+    kind = 1;  V_w = 0;  f_w = 0;  V_rev = 0;  V_nl = 0;  f_nl = 0;
+    V_a = 0;  d_a = 0;  V_a2 = 0;  d_a2 = 0;  V_b = 0;  d_b = 0;  dz_step = 0;
     cal_V = P.ctrl.cal_V(:);
     dVdf0 = (cal_V(end) - cal_V(1)) / (P.ctrl.cal_f(end) - P.ctrl.cal_f(1));
     f_act = f_target;
@@ -103,7 +115,7 @@ if abs(f_target - f_act) > P.ctrl.retarget_tol
     else
         [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on, aim_bias] = ...
             start_write(f_act, P, cal_V, dVdf0, RESET_CHARGE);
-        hall_on = 1;  n_nudge = 0;
+        hall_on = 1;  n_nudge = 0;  kind = K_WRITE;
     end
 end
 
@@ -127,6 +139,12 @@ switch mode
             timer = 0;  V_max_since_reset = max(V_max_since_reset, V_k);
         end
 
+    case REV_CHARGE    % ---- charge to V_rev, fire a small - pulse -----
+        V0 = V_rev;  pol = -1;
+        if timer > 2*Tc && ready > 0.5 && busy < 0.5
+            fire_out = 1;  mode = PULSE_WAIT;  next_mode = MEASURE;  timer = 0;
+        end
+
     case MEASURE       % ---- let eddy currents settle, average f -------
         V0 = P.ctrl.V_idle;
         if timer > P.ctrl.t_settle && hall_ok
@@ -145,16 +163,49 @@ switch mode
                     end
                 end
                 V_prev = V_k;  f_prev = f_k;  has_prev = 1;
-                % accept only from BELOW (or barely above): lowering the
-                % magnet later would need a full reset, i.e. an outage
-                in_window = (f_act - f_k) < P.ctrl.write_tol && ...
-                            (f_k - f_act) <= P.ctrl.standby_enter_tol;
+                if P.ctrl.strategy == 2
+                    % accept from ABOVE (or barely below): reverse pulses lower it later
+                    in_window = (f_k - f_act) < P.ctrl.write_tol && ...
+                                (f_act - f_k) <= P.ctrl.standby_enter_tol;
+                else
+                    % accept from BELOW (or barely above): raising later needs no reset
+                    in_window = (f_act - f_k) < P.ctrl.write_tol && ...
+                                (f_k - f_act) <= P.ctrl.standby_enter_tol;
+                end
+                if kind ~= K_WRITE
+                    in_window = abs(f_k - f_act) < P.ctrl.write_tol;   % refine pulses
+                end
                 if in_window || iter >= P.ctrl.max_iter
                     % ---- done: learn, feed the rest into the trim ------
-                    V_at_target = V_k + (f_act - f_k)*dVdf;
-                    cal_V = cal_update(P.ctrl.cal_f(:), cal_V, f_act, V_at_target);
+                    if kind == K_REV
+                        V_nl = V_rev;  f_nl = f_k;
+                        if f_k > f_act                 % not far enough: new lower bound
+                            V_a2 = V_a;  d_a2 = d_a;  V_a = V_rev;  d_a = f_w - f_k;
+                        end
+                    else                               % + write or restore
+                        if kind == K_WRITE
+                            V_at_target = V_k + (f_act - f_k)*dVdf;
+                            cal_V = cal_update(P.ctrl.cal_f(:), cal_V, f_act, V_at_target);
+                            V_a = 0;  d_a = 0;  V_a2 = 0;  d_a2 = 0;  V_b = 0;  d_b = 0;  dz_step = 0;   % new reverse search
+                        end
+                        V_w = V_k;  f_w = f_k;  V_nl = 0;  f_nl = 0;
+                    end
                     integ = min(max((f_act - f_k)/trim_gain, -P.trim.Imax), P.trim.Imax);
-                    trim_on = 1;  mode = TRACK;  timer = 0;  sat_timer = 0;  hold_timer = 0;
+                    trim_on = 1;  mode = TRACK;  timer = 0;  sat_timer = 0;
+                    if n_nudge > 0
+                        hold_timer = P.ctrl.t_standby - P.ctrl.t_refine;   % refine again sooner
+                    else
+                        hold_timer = 0;
+                    end
+                elseif kind == K_REV && f_k < f_act
+                    % reverse pulse went too far: new upper bound; restore the
+                    % overshoot write, then come down again in between
+                    V_b = V_rev;  d_b = f_w - f_k;
+                    V_k = V_w;  kind = K_RESTORE;  iter = 0;  timer = 0;  mode = WRITE_CHARGE;
+                elseif kind ~= K_WRITE
+                    [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on, aim_bias] = ...
+                        start_write(f_act, P, cal_V, dVdf0, RESET_CHARGE);
+                    kind = K_WRITE;
                 else
                     % ---- bracket (f increases with V) and next guess ----
                     if f_k > f_aim
@@ -192,24 +243,58 @@ switch mode
         if sat_timer > P.ctrl.t_trim_sat           % out of trim range -> rewrite
             [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on, aim_bias] = ...
                 start_write(f_act, P, cal_V, dVdf0, RESET_CHARGE);
-            sat_timer = 0;
+            sat_timer = 0;  kind = K_WRITE;
         elseif hold_timer > P.ctrl.t_standby && hall_ok
             trim_Hz = integ*trim_gain;             % what the trim supplies now
             hold_timer = 0;
-            if abs(trim_Hz) < P.ctrl.standby_enter_tol
+            stuck = (n_nudge >= P.ctrl.max_nudge + (P.ctrl.strategy == 2)*P.ctrl.max_rev) || ...
+                    (P.ctrl.strategy == 2 && V_b > 0 && (V_b - V_a) < 0.1);   % bracket too narrow
+            if abs(trim_Hz) < P.ctrl.standby_enter_tol || (stuck && abs(trim_Hz) <= P.ctrl.spec_tol)
                 mode = STANDBY;  trim_on = 0;  integ = 0;  hall_on = 0;  wake_timer = 0;
-            elseif n_nudge < P.ctrl.max_nudge
+            elseif stuck && P.ctrl.strategy == 2   % refinement not converging: start over
+                [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on, aim_bias] = ...
+                    start_write(f_act, P, cal_V, dVdf0, RESET_CHARGE);
+                kind = K_WRITE;  n_nudge = 0;
+            elseif n_nudge < P.ctrl.max_nudge + (P.ctrl.strategy == 2)*P.ctrl.max_rev
                 n_nudge = n_nudge + 1;
-                if trim_Hz > 0                     % magnet too low: small + nudge
-                    % half step: undershooting only costs another nudge,
-                    % overshooting would cost a reset (an outage)
+                iter = 0;  timer = 0;
+                if trim_Hz > 0 && P.ctrl.strategy == 2 && V_nl > 0 && f_w > f_act + P.ctrl.standby_enter_tol
+                    % too low after a reverse pulse: upper bound; restore the overshoot
+                    V_b = V_nl;  d_b = f_w - f_nl;
+                    V_k = V_w;  kind = K_RESTORE;  mode = WRITE_CHARGE;
+                elseif trim_Hz > 0                 % magnet too low: small + nudge
+                    % half step: undershooting only costs another nudge
                     dV = P.ctrl.nudge_gain*trim_Hz*local_slope(P.ctrl.cal_f(:), cal_V, f_act, dVdf0);
                     V_k = min(V_k + dV, P.ctrl.V_write_max);
-                    aim_bias = 0;  iter = 0;  timer = 0;
+                    aim_bias = 0;  kind = K_WRITE;
                     mode = WRITE_CHARGE;           % trim keeps holding meanwhile
-                else                               % magnet too high: reset + rewrite
+                elseif P.ctrl.strategy == 2        % magnet too high: small reverse pulse
+                    D = f_w - f_act;               % drop needed from the overshoot write
+                    if V_b > 0                     % bracketed: secant, kept inside (V_a, V_b)
+                        w = V_b - V_a;
+                        V_rev = V_a + (D - d_a)*w/max(d_b - d_a, 1);
+                        V_rev = min(max(V_rev, V_a + 0.1*w), V_b - 0.1*w);
+                    elseif V_a > 0 && d_a > 2e6    % on the curve: local slope, half step, <= 1 V
+                        sl = 0;
+                        if V_a2 > 0 && V_a > V_a2, sl = (d_a - d_a2)/(V_a - V_a2); end
+                        if sl > 1e6
+                            dV = P.ctrl.nudge_gain*(D - d_a)/sl;
+                        else
+                            dV = 0.25;
+                        end
+                        V_rev = V_a + min(max(dV, 0.05), 1.0);
+                    elseif V_a > 0                 % still in the dead zone: growing steps
+                        dz_step = max(2*dz_step, P.ctrl.rev_step0);
+                        V_rev = V_a + min(dz_step, P.ctrl.rev_dV_max);
+                    else                           % first try: reverse calibration table
+                        V_rev = rev_lookup(P, V_w, D);
+                    end
+                    V_rev = min(V_rev, P.ctrl.V_reset);
+                    kind = K_REV;  mode = REV_CHARGE;
+                else                               % strategy 1, too high: reset + rewrite
                     [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on, aim_bias] = ...
                         start_write(f_act, P, cal_V, dVdf0, RESET_CHARGE);
+                    kind = K_WRITE;
                 end
             end
         end
@@ -262,9 +347,19 @@ function [mode, timer, iter, has_lo, has_hi, has_prev, integ, V_k, dVdf, trim_on
          start_write(f_t, P, cal_V, dVdf0, RESET_CHARGE)
 mode = RESET_CHARGE;  timer = 0;  iter = 0;
 has_lo = 0;  has_hi = 0;  has_prev = 0;  integ = 0;  trim_on = 0;
-aim_bias = P.ctrl.write_bias;
+aim_bias = P.ctrl.write_bias;                 % strategy 1: aim low
+if P.ctrl.strategy == 2, aim_bias = -P.ctrl.write_bias; end   % strategy 2: aim high
 V_k  = min(max(cal_lookup(P.ctrl.cal_f(:), cal_V, f_t - aim_bias), 0), P.ctrl.V_write_max);
 dVdf = local_slope(P.ctrl.cal_f(:), cal_V, f_t, dVdf0);
+end
+
+function V = rev_lookup(P, V_w, D)
+% reverse voltage that lowers f by D after a write at V_w (bilinear in the
+% calibration table, clamped to its range)
+Vg = P.ctrl.rev_Vw(:);  Dg = P.ctrl.rev_D(:);  T = P.ctrl.rev_V;
+i = seg(Vg, V_w);  a = min(max((V_w - Vg(i))/(Vg(i+1) - Vg(i)), 0), 1);
+j = seg(Dg, D);    b = min(max((D - Dg(j))/(Dg(j+1) - Dg(j)), 0), 1);
+V = (1-a)*(1-b)*T(i,j) + a*(1-b)*T(i+1,j) + (1-a)*b*T(i,j+1) + a*b*T(i+1,j+1);
 end
 
 function I = cal_lookup(cf, cI, f)
