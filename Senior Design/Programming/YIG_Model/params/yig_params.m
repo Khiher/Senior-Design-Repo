@@ -14,7 +14,7 @@ function P = yig_params()
 %       yig_setup (sizes are compiled in)
 
 %% ---------------- Simulation timing ----------------------------------
-P.sim.Ts    = 1e-6;     % plant step [s]   (pulse is ~1 ms, so 1 us resolves it)
+P.sim.Ts    = 1e-6;     % plant step [s]   (pulses are ~10 us; the driver sub-steps them, see P.drv.nsub)
 P.sim.Tc    = 1e-4;     % controller step [s] (10 kHz control loop)
 P.sim.Tstop = 0.40;     % default stop time [s]
 P.sim.log_decim = 10;   % log every Nth plant sample
@@ -23,10 +23,13 @@ P.T0 = 25;              % reference temperature [degC]
 
 %% ---------------- Pulse driver: charger + cap + H-bridge + coil -------
 %  Cap discharges into the main coil through the H-bridge. The bridge
-%  turns OFF when (a) the cap reaches 0 V (natural quarter-sine peak) or
-%  (b) the coil current reaches the commanded peak I_lim (peak-current
-%  mode). After turn-off the current freewheels through the body diodes
-%  back INTO the cap (energy recovery) until it reaches zero.
+%  turns OFF when (a) the coil current reaches its natural peak (di/dt = 0,
+%  i.e. Vc = R*i; ~Vc = 0 if underdamped) or (b) the coil current reaches
+%  the commanded peak I_lim (peak-current mode). After turn-off the
+%  current freewheels through the body diodes back INTO the cap (energy
+%  recovery) until it reaches zero.
+%  The measured coil below is OVERDAMPED (R = 3 ohm > 2*sqrt(L/C) = 1.17 ohm):
+%  a 100 V natural pulse peaks at ~30 A after ~8 us, with Vc still ~90 V.
 P.drv.L       = 6.812e-6;   % main coil inductance [H]
 P.drv.R       = 3;    % coil + switch + ESR resistance [ohm]
 P.drv.C       = 20e-6;  % storage capacitor [F]
@@ -37,6 +40,7 @@ P.drv.I_dump  = 2.0;    % active bleed current when V0_set < Vc [A]
 P.drv.ready_tol = 0.5;  % |Vc - V0_set| below this => "ready" [V]
 P.drv.Ilim_err_sd = 1e-3; % peak-current comparator repeatability (1 sigma) [A]
 P.drv.Vc0     = 0;      % initial cap voltage [V]
+P.drv.nsub    = 50;     % pulse integration sub-steps per Ts (Ts/nsub = 20 ns)
 
 %% ---------------- Trim (FM) coil ---------------------------------------
 P.trim.Imax = 1.0;      % trim driver limit [A]
@@ -104,8 +108,9 @@ P.sens.T_sd    = 0.02;  % temperature-sensor noise [degC rms]
 %% ---------------- Baseline controller tuning --------------------------
 %  (Used only by control/yig_controller.m -- add whatever your own
 %   controller needs here.)
-P.ctrl.V_sat     = 300;   % bus voltage for the saturating (reset) pulse [V]
-P.ctrl.V_knock   = 100;   % bus voltage for the knock-down pulse [V] (natural peak ~6.3 A)
+P.ctrl.V_sat     = 100;   % bus voltage for the saturating (reset) pulse [V] (= drv.Vmax; natural peak ~30 A)
+P.ctrl.V_knock   = 20;    % bus voltage for the knock-down pulse [V] (natural peak ~6 A > I_knock_max;
+                          %  keeps di/dt ~3 A/us so comparator delay barely overshoots I_lim)
 P.ctrl.I_knock_max = 3.4; % largest knock-down peak current (keeps m > 0) [A]
 P.ctrl.V_idle    = 0;     % cap voltage while holding (0 = fully discharged, lowest energy) [V]
 P.ctrl.write_tol = 15e6;  % accept a write when |f - f_target| < this [Hz]

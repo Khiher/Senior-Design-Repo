@@ -89,7 +89,7 @@ The **YIG Plant** subsystem runs every `Ts` (1 µs):
 
 ## Baseline controller (what ships in `yig_controller.m`)
 
-1. **Saturate.** A 300 V natural pulse of about 19 A puts the magnet at positive remanence (about 18.2 GHz).
+1. **Saturate.** A 100 V natural pulse (the measured coil is overdamped; it peaks at about 30 A after about 8 µs) puts the magnet at positive remanence (about 18.2 GHz).
 2. **Knock down.** A −pulse in peak-current mode at `I_k`. f(I_k) is monotone, roughly 6 GHz/A, so the controller searches `I_k` with a bracketed secant. A deeper knock needs no reset, because Preisach wipe-out erases the previous one. A shallower knock needs a re-saturate first.
 3. **Track.** The magnet holds the field with zero power. A PI loop on the trim coil (about ±56 MHz) removes residual error and drift. If the trim saturates, the controller rewrites the magnet.
 
