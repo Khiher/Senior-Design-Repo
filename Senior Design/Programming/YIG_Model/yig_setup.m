@@ -12,9 +12,11 @@
 %   Any function in devices/ works; add your own with the same fields.
 %
 %   After it finishes:
-%       out = sim('yig_tuning_model');  yig_plot_results(out)
+%       out = sim('yig_tuning_model');  s = yig_plot_results(out);
 %   or, without Simulink:
-%       out = yig_sim_script();         yig_plot_results(out)
+%       out = yig_sim_script();         s = yig_plot_results(out);
+%   then check the specs:
+%       yig_spec_report(s, YIG, ref_profile);
 
 root = fileparts(mfilename('fullpath'));
 addpath(root, fullfile(root,'params'), fullfile(root,'plant'), ...
@@ -27,7 +29,8 @@ end
 DEV = feval(yig_device);
 fprintf('Device: %s  (reset %g V on POL %s, write on POL %s, %s)\n', ...
     DEV.name, DEV.V_reset, DEV.pol_reset, DEV.pol_write, DEV.sparam);
-YIG = yig_fit_device(yig_params(DEV));   % <- the struct every block receives
+[YIG, FIT] = yig_fit_device(yig_params(DEV));   % <- the struct every block receives
+YIG = yig_calibrate_hall(YIG, FIT);            % bench calibration of the Hall sensor
 Ts    = YIG.sim.Ts;             % plant step
 Tc    = YIG.sim.Tc;             % controller step
 Tstop = YIG.sim.Tstop;

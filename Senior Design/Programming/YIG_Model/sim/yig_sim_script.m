@@ -26,12 +26,12 @@ NL = floor(N / D);
 
 out.t     = zeros(NL, 1);
 out.ref   = zeros(NL, 1);
-out.u     = zeros(NL, 6);
+out.u     = zeros(NL, 8);
 out.y     = zeros(NL, 8);
 out.truth = zeros(NL, 11);   % [drv(5) mag(3) res(3)]
 
 y_prev = zeros(8, 1);
-u      = zeros(6, 1);
+u      = zeros(8, 1);
 f_t    = ref(1, 2);
 li = 0;
 for k = 0:N-1

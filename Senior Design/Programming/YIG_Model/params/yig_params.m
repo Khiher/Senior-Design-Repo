@@ -19,7 +19,7 @@ if nargin < 1, dev = pcb1_yig12_20260223(); end
 
 %% ---------------- Simulation timing ----------------------------------
 P.sim.Ts    = 1e-6;     % plant step [s]   (pulses are ~10 us; the driver sub-steps them, see P.drv.nsub)
-P.sim.Tc    = 1e-4;     % controller step [s] (10 kHz control loop)
+P.sim.Tc    = 20e-6;    % controller step [s] (50 kHz control loop; needed for the < 1 ms response spec)
 P.sim.Tstop = 0.40;     % default stop time [s]
 P.sim.log_decim = 10;   % log every Nth plant sample
 
@@ -39,11 +39,13 @@ P.drv.R       = 3;    % coil + switch + ESR resistance [ohm]      (measured)
 P.drv.C       = 20e-6;  % storage capacitor [F]                   (measured)
 P.drv.Vd      = 0.8;    % body-diode drop during recovery [V] (x2 diodes)
 P.drv.Vmax    = 100;    % max allowed cap voltage [V]             (measured)
-P.drv.I_chg   = 2.0;    % constant-current charger [A]
-P.drv.I_dump  = 2.0;    % active bleed current when V0_set < Vc [A]
+P.drv.I_chg   = 10;     % constant-current charger [A]  (0 -> 50 V in 100 us; placeholder)
+P.drv.I_dump  = 10;     % active bleed current when V0_set < Vc [A]  (placeholder)
 P.drv.ready_tol = 0.5;  % |Vc - V0_set| below this => "ready" [V]
-P.drv.Vset_err_sd = 0.02; % charge-voltage error at the moment of firing (1 sigma) [V]
-                          %  (the LUT slope is ~0.5 GHz/V, so 20 mV is ~10 MHz)
+P.drv.Vset_err_sd = 5e-3; % charge-voltage error at the moment of firing (1 sigma) [V]
+                          %  The LUT slope is ~0.5 GHz/V, so 5 mV is ~3 MHz per write.
+                          %  Placeholder, but effectively a REQUIREMENT on the charger:
+                          %  much worse and the magnet alone can't land within 10 MHz.
 P.drv.Ilim_err_sd = 1e-3; % peak-current comparator repeatability (1 sigma) [A]
 P.drv.Vc0     = 0;      % initial cap voltage [V]
 P.drv.nsub    = 50;     % pulse integration sub-steps per Ts (Ts/nsub = 20 ns)
@@ -76,7 +78,8 @@ P.gap.B_pass = 0.26;    % passive bias field [T]                  (fitted)
 P.gap.Bmax   = 0.23;    % AlNiCo contribution at m = 1 [T]        (fitted)
 P.gap.tc     = -2e-4;   % reversible tempco of the magnet field [1/degC] (-0.02 %/C)
 P.gap.k_main = 4e-3;    % direct gap field from main-coil current [T/A] (only while pulsing)
-P.gap.tau_eddy = 100e-6;% eddy-current lag in pole pieces [s]
+P.gap.tau_eddy = 100e-6;% eddy-current lag in pole pieces [s]  (placeholder; sets the
+                        %  settle time after a write, so it dominates response time)
 
 %% ---------------- YIG resonator / filter ------------------------------
 %  Centre frequency (vendor): fc [MHz] = 2.8 * B [G] + 2217.
@@ -97,9 +100,30 @@ P.sens.I_lsb   = 5e-3;  % coil-current ADC LSB [A]
 P.sens.I_sd    = 5e-3;  % coil-current noise [A rms]
 P.sens.V_lsb   = 0.1;   % cap-voltage ADC LSB [V]
 P.sens.V_sd    = 0.1;   % cap-voltage noise [V rms]
-P.sens.f_sd    = 0.5e6; % centre-frequency measurement noise [Hz rms]
 P.sens.P_sd    = 0.1;   % detector noise [dB rms]
 P.sens.T_sd    = 0.02;  % temperature-sensor noise [degC rms]
+
+%% ---------------- Hall sensor (frequency feedback) --------------------
+%  Measures the field near the YIG sphere; the controller turns it into a
+%  frequency with a bench calibration (yig_calibrate_hall). All placeholders,
+%  roughly a good linear Hall IC with a 16-bit ADC. 1 G = 1e-4 T = 2.8 MHz.
+P.hall.k         = 0.8;     % fraction of the gap field at the sensor location
+P.hall.gain_err  = 0.01;    % sensitivity error at T0 (removed by calibration)
+P.hall.offset    = 2e-3;    % offset at T0 [T] (20 G; removed by calibration)
+P.hall.tc_gain   = -400e-6; % true sensitivity tempco [1/degC]
+P.hall.tc_offset = 5e-6;    % offset drift [T/degC] (0.05 G/degC; not compensated)
+P.hall.noise_sd  = 50e-6;   % noise per sample [T rms] (0.5 G, ~1.4 MHz)
+P.hall.tau       = 8e-6;    % sensor bandwidth as a time constant [s] (~20 kHz)
+P.hall.FS        = 0.5;     % ADC full scale +/- [T]
+P.hall.bits      = 16;      % ADC resolution (LSB = 15 uT = 0.15 G = 0.4 MHz)
+
+%% ---------------- Power (for the < 1 mW standby spec) -----------------
+%  Placeholders. Standby = magnet holding on its own, trim off, MCU asleep,
+%  Hall powered only during periodic wake-up checks.
+P.pwr.R_trim  = 1.0;      % trim-coil resistance [ohm]
+P.pwr.P_sleep = 0.2e-3;   % MCU stop mode + regulators + leakage [W]
+P.pwr.P_hall  = 20e-3;    % Hall sensor + ADC while powered [W] (3.3 V x 6 mA)
+P.pwr.P_run   = 50e-3;    % MCU running + Hall, while actively tuning [W] (reported only)
 
 %% ---------------- Device LUT (vendor calibration) ---------------------
 %  Write voltage vs centre frequency after a reset pulse of V_reset.
@@ -114,15 +138,32 @@ P.lut.V_reset = dev.V_reset; % [V]
 P.ctrl.V_reset   = dev.V_reset; % reset pulse voltage, negative polarity [V]
 P.ctrl.V_write_max = dev.V_reset; % never write harder than the reset can erase [V]
 P.ctrl.V_idle    = 0;     % cap voltage while holding (0 = fully discharged, lowest energy) [V]
-P.ctrl.write_tol = 25e6;  % accept a write when |f - f_target| < this; the trim coil does the rest [Hz]
+P.ctrl.spec_tol  = 10e6;  % accuracy spec [Hz]
+P.ctrl.write_tol = 40e6;  % accept a write when |f_magnet - f_target| < this; the trim coil does the rest [Hz]
+P.ctrl.write_bias = 20e6; % aim writes this far LOW: the magnet can only be raised without a reset,
+                          %  so a write is accepted only if it lands between -write_tol and
+                          %  +standby_enter_tol of the target; the trim covers the rest [Hz]
 P.ctrl.max_iter  = 10;    % max write pulses per target
-P.ctrl.t_settle  = 1.0e-3;% wait after a pulse before measuring [s]
-P.ctrl.n_avg     = 10;    % f samples averaged per measurement
+P.ctrl.t_settle  = 7.5*P.gap.tau_eddy; % wait after a pulse before measuring [s] (eddy decays to 0.05%)
+P.ctrl.n_avg     = 5;     % Hall samples averaged per measurement
 P.ctrl.retarget_tol = 1e6;% target change that counts as a new target [Hz]
-P.ctrl.Ki_trim   = 2.0e-5;% trim integral gain [A/(Hz*s)]
-P.ctrl.Kp_trim   = 2.0e-9;% trim proportional gain [A/Hz]
+P.ctrl.Ki_trim   = 5.0e-5;% trim integral gain [A/(Hz*s)]
+P.ctrl.Kp_trim   = 5.0e-9;% trim proportional gain [A/Hz]
 P.ctrl.trim_frac = 0.9;   % rewrite magnet if |I_trim| > frac*Imax ...
-P.ctrl.t_trim_sat = 5e-3; % ... for longer than this [s]
+P.ctrl.t_trim_sat = 0.5e-3; % ... for longer than this [s]
+% standby: after holding t_standby, nudge the magnet until the trim is ~0,
+% then switch trim + Hall off and wake every t_wake to check for drift
+P.ctrl.t_standby = 5e-3;  % hold time before going to standby [s]
+P.ctrl.standby_enter_tol = 6e6; % trim may supply at most this when entering standby [Hz]
+P.ctrl.standby_wake_tol  = 8e6; % on a wake check, re-tune if the error exceeds this [Hz]
+P.ctrl.max_nudge = 8;     % refine pulses allowed per standby entry
+P.ctrl.nudge_gain = 0.5;  % size a nudge for this fraction of the error (the local
+                          %  slope is uncertain; undershoot is cheap, overshoot needs a reset)
+P.ctrl.t_wake    = 20e-3; % wake-up period in standby [s] (placeholder; real drift is slow)
+P.ctrl.t_hall_on = 50e-6; % Hall power-up settle before readings are trusted [s]
+% Hall -> frequency conversion (filled in by yig_calibrate_hall)
+P.ctrl.hall_tc_comp = -350e-6; % gain tempco the firmware assumes (datasheet typical) [1/degC]
+P.ctrl.hall_a = 1;  P.ctrl.hall_b = 0;  P.ctrl.T_cal = P.T0;
 % Initial write-voltage table = the device LUT. Refined online after every write.
 P.ctrl.cal_f = P.lut.f;   % [Hz]  (must be increasing)
 P.ctrl.cal_V = P.lut.V;   % [V]
