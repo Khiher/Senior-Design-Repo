@@ -16,7 +16,7 @@ persistent B_lag
 T     = env(1);
 B_dis = env(2);
 
-B_src = P.gap.Bmax*mag(1)*(1 + P.gap.tc*(T - P.T0)) ...   % latched magnet
+B_src = (P.gap.B_pass + P.gap.Bmax*mag(1))*(1 + P.gap.tc*(T - P.T0)) ... % passive bias + latched AlNiCo
       + P.gap.k_main*drv(1) ...                            % main coil (pulse only)
       + P.trim.kB*drv(5) ...                               % trim coil
       + B_dis;                                             % stray field

@@ -1,10 +1,15 @@
 %YIG_SETUP  Run this first.  Sets up the MATLAB environment for the YIG
 %   tuning model:
 %     1. adds the project folders to the path
-%     2. loads all parameters into the base-workspace struct  YIG
+%     2. loads the device LUT, builds the parameters and fits the magnet
+%        to that LUT -> base-workspace struct  YIG  (and  DEV  = the LUT)
 %     3. defines the test profiles (frequency targets, temperature,
 %        stray field) used by both the Simulink model and the script sim
 %     4. builds yig_tuning_model.slx if it does not exist yet
+%
+%   Choose the device by setting  yig_device  first (default PCB1):
+%       yig_device = 'pcb2_yig6_20260223';  yig_setup
+%   Any function in devices/ works; add your own with the same fields.
 %
 %   After it finishes:
 %       out = sim('yig_tuning_model');  yig_plot_results(out)
@@ -13,21 +18,28 @@
 
 root = fileparts(mfilename('fullpath'));
 addpath(root, fullfile(root,'params'), fullfile(root,'plant'), ...
-        fullfile(root,'control'), fullfile(root,'sim'));
+        fullfile(root,'control'), fullfile(root,'sim'), fullfile(root,'devices'));
 
-%% ---- parameters -------------------------------------------------------
-YIG   = yig_params();           % <- the struct every block receives
+%% ---- device + parameters ---------------------------------------------
+if ~exist('yig_device', 'var') || isempty(yig_device)
+    yig_device = 'pcb1_yig12_20260223';
+end
+DEV = feval(yig_device);
+fprintf('Device: %s  (reset %g V on POL %s, write on POL %s, %s)\n', ...
+    DEV.name, DEV.V_reset, DEV.pol_reset, DEV.pol_write, DEV.sparam);
+YIG = yig_fit_device(yig_params(DEV));   % <- the struct every block receives
 Ts    = YIG.sim.Ts;             % plant step
 Tc    = YIG.sim.Tc;             % controller step
 Tstop = YIG.sim.Tstop;
 
 %% ---- test profiles ----------------------------------------------------
 % Target centre frequency: [time(s)  f_target(Hz)]  (piecewise constant)
+% Kept inside every device's LUT range (4.6 - 12.8 GHz).
 ref_profile = [ 0.00  10.00e9
-                0.08  14.00e9
+                0.08  12.50e9
                 0.16   5.00e9
                 0.24   5.02e9      % small move -> handled by the trim coil only
-                0.30  12.00e9 ];
+                0.30   7.50e9 ];
 
 % Environment: [time(s)  temperature(degC)  stray field(T)]  (interpolated)
 env_profile = [ 0.000  25  0

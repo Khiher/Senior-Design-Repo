@@ -1,8 +1,10 @@
-function mag = yig_magnet_step(I_coil, P)
+function mag = yig_magnet_step(I_coil, P, reinit)
 %YIG_MAGNET_STEP  AlNiCo latching magnet: Preisach hysteresis + gap demag.
 %   One plant step.  Codegen-compatible.
 %
 %   I_coil : main-coil current [A]
+%   reinit : optional; true restarts from P.mag.init (used by
+%            yig_fit_device, much faster than "clear yig_magnet_step")
 %   mag    : [m; H_eff; H_coil]
 %            m      normalised magnetisation (-1..1), sets the gap field
 %            H_eff  field the magnet actually sees  = H_coil - D*m  [A/m]
@@ -15,7 +17,7 @@ function mag = yig_magnet_step(I_coil, P)
 %   sheared loop / recoil behaviour is exact, independent of step size.
 
 persistent seq n x_prev H_prev m_now
-if isempty(seq)
+if isempty(seq) || (nargin > 2 && reinit)
     [seq, n] = pr_init(P);
     x_prev = 0;  H_prev = 0;
     % initial self-consistent state at H = 0

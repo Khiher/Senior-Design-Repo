@@ -38,6 +38,7 @@ switch phase
         end
         if fire > 0.5 && fire_prev < 0.5
             phase = 1;
+            Vc = max(Vc + P.drv.Vset_err_sd*randn(), 0);   % charger regulation error
             if u(3) < 0, pol = -1; else, pol = 1; end
             if u(4) > 0
                 Ilim = u(4) + P.drv.Ilim_err_sd*randn();
