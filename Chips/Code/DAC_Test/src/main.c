@@ -22,6 +22,8 @@
  *   STATUS              OK PI1=<pos> PI2=<pos> DACA=<mV> DACB=<mV> ERR=<0|1>
  *   UP <1|2> [n]        pulse PI up n times (default 1)       -> OK PI<x>=<pos>
  *   DN <1|2> [n]        pulse PI down n times (default 1)     -> OK PI<x>=<pos>
+ *                       Each PI has 8 positions (0..7). Moves stop at the ends, so the
+ *                       reply may show fewer steps than requested.
  *   RST [1|2]           8 DN pulses (both PIs if omitted)     -> OK
  *   EOM [ms]            count errors for ms (default 100)     -> OK <errors> <total>
  *   LVL                 instantaneous EOM_ERR level           -> OK <0|1>
@@ -43,7 +45,7 @@
 #define CHIP_STARTUP_MS     10u      /* let the chip's clock start before resetting PIs */
 #define EOM_DEFAULT_MS      100u
 #define EOM_MAX_MS          60000u
-#define PI_MAX_PULSES       1000u    /* per command */
+#define PI_MAX_PULSES       PI_STEPS /* per command; more is pointless with 8 positions */
 #define LINE_MAX            64
 
 DAC_HandleTypeDef  hdac;
