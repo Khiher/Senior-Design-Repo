@@ -56,18 +56,24 @@ void pi_init(void)
     }
 }
 
-void pi_up(int pi, uint32_t n)
+int32_t pi_up(int pi, uint32_t n)
 {
-    if (pi < 1 || pi > PI_COUNT) return;
+    if (pi < 1 || pi > PI_COUNT) return 0;
+    uint32_t room = (uint32_t)(PI_POS_MAX - position[pi - 1]);
+    if (n > room) n = room;
     pulse(&up_pin[pi - 1], n);
     position[pi - 1] += (int32_t)n;
+    return (int32_t)n;
 }
 
-void pi_down(int pi, uint32_t n)
+int32_t pi_down(int pi, uint32_t n)
 {
-    if (pi < 1 || pi > PI_COUNT) return;
+    if (pi < 1 || pi > PI_COUNT) return 0;
+    uint32_t room = (uint32_t)position[pi - 1];
+    if (n > room) n = room;
     pulse(&dn_pin[pi - 1], n);
     position[pi - 1] -= (int32_t)n;
+    return (int32_t)n;
 }
 
 void pi_reset(int pi)

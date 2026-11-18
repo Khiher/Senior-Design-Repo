@@ -14,12 +14,17 @@
 #include <stdint.h>
 
 #define PI_COUNT          2
+#define PI_STEPS          8     /* positions per PI: 0 .. PI_STEPS-1 */
+#define PI_POS_MAX        (PI_STEPS - 1)
 #define PI_RESET_PULSES   8u    /* DN pulses at startup / on reset (spec: at least 8) */
 
+/* Positions are tracked by counting pulses and clamped to 0..PI_POS_MAX: pi_up/pi_down
+ * only send the pulses that stay inside the range, so the chip never gets a pulse past
+ * either end. The tracking is only valid after a reset. */
 void    pi_init(void);                       /* GPIOs low, cycle counter on */
-void    pi_up(int pi, uint32_t n);           /* pi = 1 or 2 */
-void    pi_down(int pi, uint32_t n);
+int32_t pi_up(int pi, uint32_t n);           /* pi = 1 or 2; returns pulses actually sent */
+int32_t pi_down(int pi, uint32_t n);
 void    pi_reset(int pi);                    /* PI_RESET_PULSES DN pulses, position = 0 */
-int32_t pi_position(int pi);                 /* steps from reset, as tracked by firmware */
+int32_t pi_position(int pi);                 /* 0 .. PI_POS_MAX */
 
 #endif
