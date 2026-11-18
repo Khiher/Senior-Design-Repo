@@ -65,9 +65,9 @@ set_mfb(ctrl, { ...
     '%  same signature:  u = my_ctrl(f_target, y, YIG) ).'
     '%   f_target : desired centre frequency [Hz]'
     '%   y (8x1)  : measurements, see yig_sensors_step.m'
-    '%   u (6x1)  : [V0_set; fire; polarity; I_lim; I_trim; f_probe]'
+    '%   u (8x1)  : [V0_set; fire; polarity; I_lim; I_trim; f_probe; hall_on; mode]'
     'u = yig_controller(f_target, y, YIG);'
-    }, {'u', '[6 1]'});
+    }, {'u', '[8 1]'});
 try set_param(ctrl, 'BackgroundColor', 'yellow'); catch, end
 
 add_block('simulink/Signal Attributes/Rate Transition', [mdl '/RT u'], ...

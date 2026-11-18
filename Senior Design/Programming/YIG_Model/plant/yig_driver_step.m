@@ -6,7 +6,7 @@ function drv = yig_driver_step(u, P)
 %         u(1) V0_set   charge target [V]
 %         u(2) fire     rising edge fires a pulse (ignored while busy)
 %         u(3) polarity +1 / -1 (current direction in the main coil)
-%         u(4) I_lim    peak-current cutoff [A]; 0 = natural quarter-sine peak
+%         u(4) I_lim    peak-current cutoff [A]; 0 = natural peak (di/dt = 0)
 %         u(5) I_trim   trim-coil current setpoint [A]
 %         u(6) f_probe  (not used here)
 %
@@ -27,6 +27,7 @@ V0_set = min(max(u(1), 0), P.drv.Vmax);
 fire   = double(u(2) > 0.5);   % double, so it can live in a persistent
 Itrim_set = min(max(u(5), -P.trim.Imax), P.trim.Imax);
 
+I_out = ic;
 switch phase
     case 0  % ---------------- idle: charger regulates Vc ---------------
         dV = Ts*P.drv.I_chg/C;
@@ -37,6 +38,7 @@ switch phase
         end
         if fire > 0.5 && fire_prev < 0.5
             phase = 1;
+            Vc = max(Vc + P.drv.Vset_err_sd*randn(), 0);   % charger regulation error
             if u(3) < 0, pol = -1; else, pol = 1; end
             if u(4) > 0
                 Ilim = u(4) + P.drv.Ilim_err_sd*randn();
@@ -45,28 +47,41 @@ switch phase
             end
         end
 
-    case 1  % ---------------- bridge ON: Vc drives the coil -------------
-        ic_new  = ic + Ts*(Vc - R*ic)/L;
-        Vc_new = Vc - Ts*ic_new/C;
-        if Ilim > 0 && ic_new >= Ilim
-            % comparator trips: clamp exactly at the threshold
-            ic  = Ilim;
-            Vc = Vc - Ts*Ilim/C;
-            phase = 2;
-        elseif Vc_new <= 0
-            ic  = ic_new;  Vc = 0;  phase = 2;    % switches off at Vc = 0
-        else
-            ic  = ic_new;  Vc = Vc_new;
+    otherwise
+        % Pulse in progress. The coil time constants are only a few us
+        % (L/R = 2.3 us with the measured coil), so integrate the pulse
+        % in nsub sub-steps of Ts/nsub.
+        % The magnet only sees one current per Ts, and its final state is
+        % set by the current EXTREMA (Preisach), so report the largest
+        % current reached inside the step, not the end-of-step value.
+        dt = Ts/P.drv.nsub;
+        ipk = ic;
+        for s = 1:P.drv.nsub
+            if phase == 1   % ---------- bridge ON: Vc drives the coil ----
+                ic_new = ic + dt*(Vc - R*ic)/L;
+                Vc_new = Vc - dt*ic_new/C;
+                if Ilim > 0 && ic_new >= Ilim
+                    % comparator trips: clamp exactly at the threshold
+                    ic = Ilim;  Vc = Vc - dt*Ilim/C;  phase = 2;
+                elseif ic_new <= ic || Vc_new <= 0
+                    % natural peak: current stops rising (di/dt <= 0,
+                    % i.e. Vc <= R*ic).  Underdamped this is ~Vc = 0;
+                    % overdamped (R > 2*sqrt(L/C)) Vc never reaches 0.
+                    Vc = max(Vc_new, 0);  phase = 2;
+                else
+                    ic = ic_new;  Vc = Vc_new;
+                end
+            elseif phase == 2   % ---- bridge OFF: diodes return energy --
+                ic_new = ic + dt*(-Vc - R*ic - 2*P.drv.Vd)/L;
+                if ic_new <= 0
+                    ic = 0;  phase = 0;
+                else
+                    ic = ic_new;  Vc = Vc + dt*ic/C;
+                end
+            end
+            ipk = max(ipk, ic);
         end
-
-    otherwise % -------------- bridge OFF: diodes return energy to cap ---
-        ic_new = ic + Ts*(-Vc - R*ic - 2*P.drv.Vd)/L;
-        if ic_new <= 0
-            ic = 0;  phase = 0;
-        else
-            ic  = ic_new;
-            Vc = Vc + Ts*ic/C;
-        end
+        I_out = ipk;
 end
 fire_prev = fire;
 
@@ -75,5 +90,5 @@ Itrim = Itrim + Ts/P.trim.tau*(Itrim_set - Itrim);
 
 busy  = double(phase ~= 0);
 ready = double(phase == 0 && abs(Vc - V0_set) <= P.drv.ready_tol);
-drv = [pol*ic; Vc; busy; ready; Itrim];
+drv = [pol*I_out; Vc; busy; ready; Itrim];
 end
