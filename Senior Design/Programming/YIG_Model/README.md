@@ -28,6 +28,87 @@ out = yig_sim_script();  s = yig_plot_results(out);  yig_spec_report(s, YIG, ref
 
 Both run the same plant and controller code.
 
+## Web demo
+
+A local web page for running this model. You can use it with or without MATLAB:
+
+| | You need | You get |
+|---|---|---|
+| **Recorded runs** | Python 3 | Simulink results recorded for every board and strategy |
+| **Live model** | Python 3, MATLAB and Simulink | all of the above, plus live tuning and new Simulink runs |
+
+There are no Python packages or MATLAB toolboxes to install. Tested on macOS with MATLAB R2026b and Python 3.15; other versions and Windows/Linux are untested.
+
+### Run it
+
+1. Get the code. The demo is on the `feat/yig-web-demo` branch until it is merged:
+
+   ```bash
+   git clone https://github.com/Khiher/Senior-Design-Repo.git
+   cd Senior-Design-Repo
+   git checkout feat/yig-web-demo
+   cd "Senior Design/Programming/YIG_Model"
+   ```
+
+2. Start the server from this folder:
+
+   ```bash
+   python3 web/server.py
+   ```
+
+   Without MATLAB, use `python3 web/server.py --no-matlab`.
+
+3. Open <http://localhost:8137>. Wait for the status at the top right to say **MATLAB ready** (usually under a minute).
+
+4. Press Ctrl+C in the terminal to stop. This closes the background MATLAB too.
+
+### Use it
+
+- **Live tuning:** pick a board, strategy, target, temperature and stray field, then press **Run**. Each run continues the same session, so the magnet keeps its state, like the real one. **New session** starts over, and so does changing the board, strategy or noise seed.
+- **Full test:** shows the recorded Simulink run for the chosen board and strategy. **Run in Simulink** runs `yig_tuning_model.slx` again on the profile in `yig_setup.m`.
+- **Charts:** hover to read values, drag across a chart to zoom in, and use **Show** to switch between one target and the whole run.
+
+The first run on a board fits the magnet (about 25 s), and the first Simulink run compiles the model (up to a minute). Both are cached in `web/.cache`, so later runs are faster.
+
+**Sample sequence** (PCB1, *Overshoot, then correct down*, seed 1, 20 ms each):
+
+| Run | Target (GHz) | Temperature (°C) | Stray field (mT) | Shows |
+|---|---|---|---|---|
+| 1 | 10 | 25 | 0 | reset, write, trim, then standby |
+| 2 | 12.5 | 25 | 0 | a large move |
+| 3 | 12.5 | 30 | 0.5 | holding through a temperature and field change |
+| 4 | 5 | 30 | 0.5 | a large move down |
+| 5 | 5.02 | 30 | 0.5 | a small move on the trim coil |
+
+Expect some red: response time and accuracy miss spec with the current placeholder values (see [Spec check](#spec-check)).
+
+### If something goes wrong
+
+| Problem | Fix |
+|---|---|
+| Status says "Recorded runs only" | MATLAB was not found. Set its path: `MATLAB_CMD=/path/to/bin/matlab python3 web/server.py` |
+| Status says "MATLAB stopped" | Check that MATLAB opens on its own and is licensed, then restart the server |
+| "Address already in use" | Another copy is running. Stop it, or add `--port 8138` and open that port instead |
+| macOS asks for access to the Documents folder | Allow it, or move the repo outside Documents |
+| **Run in Simulink** stays greyed out | Simulink is not installed; live tuning still works |
+
+### Change it
+
+After changing the model, re-record the fallback runs (about 4 minutes):
+
+```bash
+python3 web/server.py --record
+```
+
+The server only accepts connections from this computer.
+
+| File | Job |
+|---|---|
+| `web/server.py` | serves the page, starts MATLAB, passes jobs to it |
+| `web/yig_web_worker.m` | MATLAB loop that runs the jobs on the model |
+| `web/static/` | the page and the recorded runs |
+| `sim/yig_sim_chunk.m` | runs the script sim in pieces, so a session can continue |
+
 ## Device LUTs
 
 Each board's vendor calibration lives in its own function in `devices/`:

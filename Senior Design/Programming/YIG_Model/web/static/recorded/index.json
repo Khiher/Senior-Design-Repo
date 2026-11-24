@@ -1,0 +1,38 @@
+[
+ {
+  "board": "pcb1_yig12_20260223",
+  "name": "PCB1-YIG12-20260223 (new passive)",
+  "strategy": 1,
+  "file": "pcb1_yig12_20260223_s1.json"
+ },
+ {
+  "board": "pcb1_yig12_20260223",
+  "name": "PCB1-YIG12-20260223 (new passive)",
+  "strategy": 2,
+  "file": "pcb1_yig12_20260223_s2.json"
+ },
+ {
+  "board": "pcb2_old_20250611",
+  "name": "PCB2-20250611 (old passive)",
+  "strategy": 1,
+  "file": "pcb2_old_20250611_s1.json"
+ },
+ {
+  "board": "pcb2_old_20250611",
+  "name": "PCB2-20250611 (old passive)",
+  "strategy": 2,
+  "file": "pcb2_old_20250611_s2.json"
+ },
+ {
+  "board": "pcb2_yig6_20260223",
+  "name": "PCB2-YIG6-20260223 (new passive)",
+  "strategy": 1,
+  "file": "pcb2_yig6_20260223_s1.json"
+ },
+ {
+  "board": "pcb2_yig6_20260223",
+  "name": "PCB2-YIG6-20260223 (new passive)",
+  "strategy": 2,
+  "file": "pcb2_yig6_20260223_s2.json"
+ }
+]
